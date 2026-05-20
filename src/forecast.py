@@ -128,3 +128,59 @@ def backtest_strategy(wf_df: pd.DataFrame, horizon: int = 5,
         "bh_ret":          bh_ret,
         "equity":          m["equity"],
     }
+
+def direct_h5(model, X_latest_scaled: np.ndarray, current_close: float,
+              tree_predictions: np.ndarray | None = None,
+              z_score: float = 1.645) -> dict:
+    """Single Direct h=5 prediction. Confidence band from RF tree variance.
+    z=1.645 -> 90% band."""
+    pred_logret = float(model.predict(X_latest_scaled)[0])
+    pred_price  = current_close * np.exp(pred_logret)
+
+    if tree_predictions is not None:
+        sigma = tree_predictions.std()
+        band_low_logret  = pred_logret - z_score * sigma
+        band_high_logret = pred_logret + z_score * sigma
+    else:
+        band_low_logret  = pred_logret
+        band_high_logret = pred_logret
+
+    return {
+        "pred_logret":     pred_logret,
+        "pred_price":      pred_price,
+        "band_low_price":  current_close * np.exp(band_low_logret),
+        "band_high_price": current_close * np.exp(band_high_logret),
+    }
+
+def anchor_shift_forecast(model, scaler, feat_df: pd.DataFrame, feature_cols: list,
+                          horizon: int = 5) -> pd.DataFrame:
+    """Generate `horizon` forecast points by shifting the anchor date.
+    Each point uses the SAME trained h=horizon model - no recursion, no
+    feature fabrication. Returns DataFrame(target_date, anchor_date,
+    base_price, pred_logret, pred_price).
+
+    Layout (h=5):
+      anchor T-4 -> target T+1     anchor T-3 -> target T+2
+      anchor T-2 -> target T+3     anchor T-1 -> target T+4
+      anchor T   -> target T+5
+    """
+    anchors = feat_df.iloc[-horizon:]  # T-h+1 .. T
+    X_anchor = scaler.transform(anchors[feature_cols])
+    preds    = model.predict(X_anchor) # h log-returns
+
+    base_prices  = anchors["Close"].values # C[T-h+1..T]
+    pred_prices  = base_prices * np.exp(preds) # absolute forecast prices
+
+    # target date = anchor + horizon business days
+    target_dates = [
+        feat_df.index.shift(horizon, freq="B")[feat_df.index.get_loc(d)]
+        for d in anchors.index
+    ]
+
+    return pd.DataFrame({
+        "anchor_date":  anchors.index,
+        "target_date":  pd.to_datetime(target_dates),
+        "base_price":   base_prices,
+        "pred_logret":  preds,
+        "pred_price":   pred_prices,
+    }).reset_index(drop=True)
