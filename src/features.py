@@ -96,8 +96,13 @@ def build_training_set(ticker: str, stocks: dict, macro: pd.DataFrame,
     features["target"] = np.log(features["Close"].shift(-horizon) / features["Close"])
     return features.dropna()
 
-def fit_winsorize(train_series: pd.Series, n_std: float = 3.0):
-    """Return mean, std, lower_bound, upper_bound. Use on train only."""
+def fit_winsorize(train_series: pd.Series, n_std: float = 2.0):
+    """Return mean, std, lower_bound, upper_bound. Use on train only.
+
+    Default +/- 2 sigma. Tighter than the conventional 3 sigma because the model
+    learns the everyday signal better when extreme returns (earnings, COVID-style
+    shocks) are clipped harder.
+    """
     mean = train_series.mean()
     std  = train_series.std()
     lower = mean - n_std * std
