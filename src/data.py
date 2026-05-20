@@ -1,7 +1,7 @@
 import pandas as pd
 import yfinance as yf
 
-TICKER_DEFAULT = "MSFT"
+TICKER_DEFAULT = "AAPL"
 START_DATE = "2012-01-01"
 MACRO_TICKERS = {
     "VIX":  "^VIX",
