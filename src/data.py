@@ -46,3 +46,21 @@ def build_dataset(ticker: str, stocks: dict, macro: pd.DataFrame) -> pd.DataFram
     df = stock_df.join(macro, how="inner")
     df = df.dropna()
     return df
+
+def split_xy(df: pd.DataFrame):
+    """Separate features from target. Returns (X, y, feature_cols)."""
+    feature_cols = [c for c in df.columns if c not in ["target", "Ticker"]]
+    X = df[feature_cols].copy()
+    y = df["target"].copy()
+    return X, y, feature_cols
+
+
+def time_split(X: pd.DataFrame, y: pd.Series, train_ratio: float = 0.70, val_ratio: float = 0.15):
+    n = len(X)
+    n_train = int(n * train_ratio)
+    n_val   = int(n * val_ratio)
+
+    X_train, y_train = X.iloc[:n_train], y.iloc[:n_train]
+    X_val, y_val   = X.iloc[n_train:n_train + n_val], y.iloc[n_train:n_train + n_val]
+    X_test, y_test  = X.iloc[n_train + n_val:], y.iloc[n_train + n_val:]
+    return X_train, y_train, X_val, y_val, X_test, y_test
