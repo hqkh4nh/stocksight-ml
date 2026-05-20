@@ -53,11 +53,14 @@ def add_technical(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def add_macro(df: pd.DataFrame) -> pd.DataFrame:
-    """For each macro: 1-day log-return, 5-day log-return, lag-1 level."""
+    """For each macro: lagged 1-day and 5-day log-returns + lag-1 level.
+    All series are .shift(1) before computing returns so today's macro close
+    (which can be released after the equity close) does not leak into features.
+    """
     df = df.copy()
     for col in ["VIX", "SPX", "DXY", "TNX", "OIL", "GOLD"]:
-        df[col + "_ret1"] = np.log(df[col] / df[col].shift(1))
-        df[col + "_ret5"] = np.log(df[col] / df[col].shift(5))
+        df[col + "_ret1"] = np.log(df[col].shift(1) / df[col].shift(2))
+        df[col + "_ret5"] = np.log(df[col].shift(1) / df[col].shift(6))
         df[col + "_lag1"] = df[col].shift(1)
 
     # VIX is right-skewed -> log + lag

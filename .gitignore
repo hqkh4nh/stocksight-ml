@@ -94,3 +94,6 @@ desktop.ini
 *.tmp
 tmp/
 scratch/
+
+# Local-only docs
+HUONG_DAN_V2.md

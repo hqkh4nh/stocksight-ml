@@ -2,7 +2,7 @@ import pandas as pd
 import yfinance as yf
 
 TICKER_DEFAULT = "AAPL"
-START_DATE = "2015-01-01"
+START_DATE = "2012-01-01"
 MACRO_TICKERS = {
     "VIX":  "^VIX",
     "SPX":  "^GSPC",
@@ -55,12 +55,18 @@ def split_xy(df: pd.DataFrame):
     return X, y, feature_cols
 
 
-def time_split(X: pd.DataFrame, y: pd.Series, train_ratio: float = 0.70, val_ratio: float = 0.15):
+def time_split(X: pd.DataFrame, y: pd.Series,
+               train_ratio: float = 0.70, val_ratio: float = 0.15,
+               horizon: int = 5):
+    """Sequential split with embargo: purge `horizon` rows at each boundary so
+    train labels don't reference val prices (and val labels don't reference test).
+    target[t] = log(Close[t+horizon]/Close[t]) leaks `horizon` rows across each cut.
+    """
     n = len(X)
     n_train = int(n * train_ratio)
     n_val   = int(n * val_ratio)
 
-    X_train, y_train = X.iloc[:n_train], y.iloc[:n_train]
-    X_val, y_val   = X.iloc[n_train:n_train + n_val], y.iloc[n_train:n_train + n_val]
-    X_test, y_test  = X.iloc[n_train + n_val:], y.iloc[n_train + n_val:]
+    X_train, y_train = X.iloc[:n_train - horizon],                y.iloc[:n_train - horizon]
+    X_val,   y_val   = X.iloc[n_train:n_train + n_val - horizon], y.iloc[n_train:n_train + n_val - horizon]
+    X_test,  y_test  = X.iloc[n_train + n_val:],                  y.iloc[n_train + n_val:]
     return X_train, y_train, X_val, y_val, X_test, y_test

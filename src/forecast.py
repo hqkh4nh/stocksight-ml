@@ -6,26 +6,37 @@ from sklearn.preprocessing import StandardScaler
 SEED = 42
 
 def walk_forward(X: pd.DataFrame, y: pd.Series, initial_train: int = 1000, refit_every: int = 21, horizon: int = 5,
-                 rf_kwargs: dict | None = None) -> pd.DataFrame:
-    """Rolling refit. Returns DataFrame(date, y_true, y_pred, fit_id)."""
-    if rf_kwargs is None:
-        rf_kwargs = dict(n_estimators=300, max_depth=5, min_samples_leaf=10,
-                         max_features="sqrt", random_state=SEED, n_jobs=-1)
+                 rf_kwargs: dict | None = None,
+                 model_factory=None) -> pd.DataFrame:
+    """Rolling refit. Returns DataFrame(date, y_true, y_pred, fit_id).
+
+    model_factory: callable returning a fresh sklearn estimator each call.
+                   If None, defaults to RandomForestRegressor(**rf_kwargs).
+                   Pass e.g. `lambda: LinearRegression()` for an LR baseline.
+    """
+    if model_factory is None:
+        if rf_kwargs is None:
+            rf_kwargs = dict(n_estimators=300, max_depth=5, min_samples_leaf=10,
+                             max_features="sqrt", random_state=SEED, n_jobs=-1)
+        model_factory = lambda: RandomForestRegressor(**rf_kwargs)
+
     rows = []
     fit_id = 0
     pos = initial_train
     n = len(X)
 
     while pos < n - horizon:
-        # train on [0, pos)
-        X_tr, y_tr = X.iloc[:pos], y.iloc[:pos]
+        # train on [0, pos - horizon) to avoid label-overlap leak:
+        # target[pos-1] uses Close[pos-1+horizon], which lives inside the test window
+        cut = max(0, pos - horizon)
+        X_tr, y_tr = X.iloc[:cut], y.iloc[:cut]
         scaler = StandardScaler().fit(X_tr)
-        rf = RandomForestRegressor(**rf_kwargs).fit(scaler.transform(X_tr), y_tr)
+        model = model_factory().fit(scaler.transform(X_tr), y_tr)
 
         # predict on [pos, pos + refit_every)
         end = min(pos + refit_every, n)
         X_te = X.iloc[pos:end]
-        y_pred = rf.predict(scaler.transform(X_te))
+        y_pred = model.predict(scaler.transform(X_te))
         for i, date in enumerate(X_te.index):
             rows.append({"date": date, "y_true": y.iloc[pos + i],
                          "y_pred": y_pred[i], "fit_id": fit_id})
@@ -34,27 +45,86 @@ def walk_forward(X: pd.DataFrame, y: pd.Series, initial_train: int = 1000, refit
 
     return pd.DataFrame(rows).set_index("date")
 
-def backtest_strategy(wf_df: pd.DataFrame, horizon: int = 5) -> dict:
-    """Long-only: hold when pred > 0. P/L shifted by horizon to avoid lookahead.
-    Sharpe annualized with sqrt(252 / horizon)."""
-    pos = (wf_df["y_pred"] > 0).astype(int)
-    # realized return over [t, t+horizon] -- shift the position back so it's known at t
-    strat_ret = pos.shift(horizon).fillna(0) * wf_df["y_true"]
-    bh_ret    = wf_df["y_true"]
 
+def perf_metrics(returns: pd.Series, horizon: int = 5) -> dict:
+    """Compute performance metrics from a non-overlapping h-day log-return series.
+
+    Returns dict with: total_return, cagr, sharpe, sortino, calmar, max_dd,
+    time_underwater, equity.
+
+    Sharpe / Sortino annualized with sqrt(252 / horizon).
+    Sortino uses downside std only (returns < 0).
+    Calmar = CAGR / |MaxDD|.
+    Time underwater = fraction of bets where equity < running peak.
+    """
     annualizer = np.sqrt(252 / horizon)
-    sharpe = strat_ret.mean() / (strat_ret.std() + 1e-12) * annualizer
+    sharpe = returns.mean() / (returns.std() + 1e-12) * annualizer
 
-    equity = (1 + strat_ret).cumprod()
-    max_dd = (equity / equity.cummax() - 1).min()
+    equity = np.exp(returns.cumsum())
+    max_dd = float((equity / equity.cummax() - 1).min())
+
+    years = max(len(returns) * horizon / 252.0, 1e-9)
+    cagr = float(equity.iloc[-1] ** (1.0 / years) - 1)
+
+    neg = returns[returns < 0]
+    sortino = (returns.mean() / (neg.std() + 1e-12) * annualizer) if len(neg) > 0 else float("inf")
+    calmar = (cagr / abs(max_dd)) if max_dd < 0 else float("inf")
+    time_underwater = float((equity < equity.cummax()).mean())
 
     return {
-        "total_return": float(equity.iloc[-1] - 1),
-        "sharpe": float(sharpe),
-        "max_dd": float(max_dd),
-        "num_trades": int(pos.diff().abs().sum() / 2),
-        "win_rate": float((strat_ret > 0).mean()),
-        "strat_ret": strat_ret,
-        "bh_ret": bh_ret,
-        "equity": equity,
+        "total_return":    float(equity.iloc[-1] - 1),
+        "cagr":            cagr,
+        "sharpe":          float(sharpe),
+        "sortino":         float(sortino),
+        "calmar":          float(calmar),
+        "max_dd":          max_dd,
+        "time_underwater": time_underwater,
+        "equity":          equity,
+    }
+
+
+def backtest_strategy(wf_df: pd.DataFrame, horizon: int = 5,
+                      cost_bps: float = 5.0,
+                      mode: str = "long_only") -> dict:
+    """Non-overlapping h-day bets, one decision per horizon window.
+    y_true is a log-return, so compound with exp(cumsum).
+    cost_bps: cost charged per leg on every position change.
+    mode:
+      "long_only"  -> pos in {0, +1}, long when pred > 0
+      "long_short" -> pos in {-1, +1}, sign(pred); flip = 2 legs of cost
+    """
+    bets = wf_df.iloc[::horizon]
+    if mode == "long_short":
+        pos = np.sign(bets["y_pred"]).astype(int)
+    elif mode == "long_only":
+        pos = (bets["y_pred"] > 0).astype(int)
+    else:
+        raise ValueError(f"unknown mode: {mode!r}")
+    # transaction cost: charge bps per leg of position change
+    turnover = pos.diff().abs().fillna(float(abs(pos.iloc[0])))
+    cost = turnover * (cost_bps / 10000.0)
+    strat_ret = pos * bets["y_true"] - cost
+    bh_ret    = bets["y_true"]
+
+    m = perf_metrics(strat_ret, horizon=horizon)
+
+    # win_rate over ACTIVE bets only (any non-zero position counts)
+    active = pos != 0
+    win_rate = float((strat_ret[active] > 0).mean()) if active.any() else float("nan")
+
+    return {
+        "mode":            mode,
+        "total_return":    m["total_return"],
+        "cagr":            m["cagr"],
+        "sharpe":          m["sharpe"],
+        "sortino":         m["sortino"],
+        "calmar":          m["calmar"],
+        "max_dd":          m["max_dd"],
+        "time_underwater": m["time_underwater"],
+        "num_trades":      int(pos.diff().abs().sum() / 2),
+        "win_rate":        win_rate,
+        "cost_bps":        cost_bps,
+        "strat_ret":       strat_ret,
+        "bh_ret":          bh_ret,
+        "equity":          m["equity"],
     }
