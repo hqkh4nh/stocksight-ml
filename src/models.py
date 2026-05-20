@@ -58,33 +58,33 @@ def information_coefficient(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[flo
     t_stat = IC * sqrt(N-2) / sqrt(1-IC^2). |t| > 2 -> significant at p ~ 0.05."""
     if np.std(y_pred) == 0:                  # flat predictor
         return float("nan"), float("nan"), float("nan")
-    ic       = float(np.corrcoef(y_pred, y_true)[0, 1])
-    rank_ic  = float(spearmanr(y_pred, y_true).correlation)
-    n        = len(y_true)
-    t_stat   = ic * np.sqrt(n - 2) / np.sqrt(max(1 - ic * ic, 1e-12))
+    ic = float(np.corrcoef(y_pred, y_true)[0, 1])
+    rank_ic = float(spearmanr(y_pred, y_true).correlation)
+    n = len(y_true)
+    t_stat = ic * np.sqrt(n - 2) / np.sqrt(max(1 - ic * ic, 1e-12))
     return ic, rank_ic, t_stat
 
 
 def evaluate(y_true, y_pred) -> dict:
     """Return all 7 metrics. NaN means 'not applicable' (e.g. DirAcc on NaiveZero)."""
     y_true_arr = y_true.values if hasattr(y_true, "values") else np.asarray(y_true)
-    ic, rank_ic, t_stat = information_coefficient(y_true_arr, y_pred)
+    ic,rank_ic, t_stat = information_coefficient(y_true_arr, y_pred)
     return {
-        "RMSE":   np.sqrt(mean_squared_error(y_true, y_pred)),
-        "MAE":    mean_absolute_error(y_true, y_pred),
-        "R2":     r2_score(y_true, y_pred),
+        "RMSE": np.sqrt(mean_squared_error(y_true, y_pred)),
+        "MAE": mean_absolute_error(y_true, y_pred),
+        "R2": r2_score(y_true, y_pred),
         "DirAcc": directional_accuracy(y_true_arr, y_pred),
-        "IC":     ic,
+        "IC": ic,
         "RankIC": rank_ic,
-        "IC_t":   t_stat,
+        "IC_t": t_stat,
     }
 
 
 DEFAULT_RF_GRID = {
-    "n_estimators":     [200, 300, 500],
-    "max_depth":        [3, 5, 7],
+    "n_estimators": [200, 300, 500],
+    "max_depth": [3, 5, 7],
     "min_samples_leaf": [5, 10, 50],
-    "max_features":     ["sqrt"],
+    "max_features": ["sqrt"],
 }
 
 def tune_random_forest(X_train, y_train, X_val, y_val,
