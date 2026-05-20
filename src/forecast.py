@@ -8,7 +8,8 @@ SEED = 42
 def walk_forward(X: pd.DataFrame, y: pd.Series, initial_train: int = 1000, refit_every: int = 21, horizon: int = 5,
                  rf_kwargs: dict | None = None,
                  model_factory=None) -> pd.DataFrame:
-    """Rolling refit. Returns DataFrame(date, y_true, y_pred, fit_id).
+    """Expanding-window training with rolling refit cadence.
+    Returns DataFrame(date, y_true, y_pred, fit_id).
 
     model_factory: callable returning a fresh sklearn estimator each call.
                    If None, defaults to RandomForestRegressor(**rf_kwargs).
@@ -47,39 +48,22 @@ def walk_forward(X: pd.DataFrame, y: pd.Series, initial_train: int = 1000, refit
 
 
 def perf_metrics(returns: pd.Series, horizon: int = 5) -> dict:
-    """Compute performance metrics from a non-overlapping h-day log-return series.
+    """CAGR / Sharpe / MaxDD from a non-overlapping h-day log-return series.
 
-    Returns dict with: total_return, cagr, sharpe, sortino, calmar, max_dd,
-    time_underwater, equity.
-
-    Sharpe / Sortino annualized with sqrt(252 / horizon).
-    Sortino uses downside std only (returns < 0).
-    Calmar = CAGR / |MaxDD|.
-    Time underwater = fraction of bets where equity < running peak.
+    Sharpe annualized with sqrt(252 / horizon). equity = exp(cumsum(returns)).
     """
-    annualizer = np.sqrt(252 / horizon)
-    sharpe = returns.mean() / (returns.std() + 1e-12) * annualizer
-
+    ann = np.sqrt(252 / horizon)
+    sharpe = float(returns.mean() / (returns.std() + 1e-12) * ann)
     equity = np.exp(returns.cumsum())
     max_dd = float((equity / equity.cummax() - 1).min())
-
     years = max(len(returns) * horizon / 252.0, 1e-9)
     cagr = float(equity.iloc[-1] ** (1.0 / years) - 1)
-
-    neg = returns[returns < 0]
-    sortino = (returns.mean() / (neg.std() + 1e-12) * annualizer) if len(neg) > 0 else float("inf")
-    calmar = (cagr / abs(max_dd)) if max_dd < 0 else float("inf")
-    time_underwater = float((equity < equity.cummax()).mean())
-
     return {
-        "total_return":    float(equity.iloc[-1] - 1),
-        "cagr":            cagr,
-        "sharpe":          float(sharpe),
-        "sortino":         float(sortino),
-        "calmar":          float(calmar),
-        "max_dd":          max_dd,
-        "time_underwater": time_underwater,
-        "equity":          equity,
+        "total_return": float(equity.iloc[-1] - 1),
+        "cagr":         cagr,
+        "sharpe":       sharpe,
+        "max_dd":       max_dd,
+        "equity":       equity,
     }
 
 
@@ -100,33 +84,31 @@ def backtest_strategy(wf_df: pd.DataFrame, horizon: int = 5,
         pos = (bets["y_pred"] > 0).astype(int)
     else:
         raise ValueError(f"unknown mode: {mode!r}")
-    # transaction cost: charge bps per leg of position change
-    turnover = pos.diff().abs().fillna(float(abs(pos.iloc[0])))
+    # cost: bps per leg; first bet's entry counts too
+    initial = float(abs(pos.iloc[0]))
+    turnover = pos.diff().abs().fillna(initial)
     cost = turnover * (cost_bps / 10000.0)
     strat_ret = pos * bets["y_true"] - cost
     bh_ret    = bets["y_true"]
 
     m = perf_metrics(strat_ret, horizon=horizon)
 
-    # win_rate over ACTIVE bets only (any non-zero position counts)
+    # win_rate over active (non-zero) bets only
     active = pos != 0
     win_rate = float((strat_ret[active] > 0).mean()) if active.any() else float("nan")
 
     return {
-        "mode":            mode,
-        "total_return":    m["total_return"],
-        "cagr":            m["cagr"],
-        "sharpe":          m["sharpe"],
-        "sortino":         m["sortino"],
-        "calmar":          m["calmar"],
-        "max_dd":          m["max_dd"],
-        "time_underwater": m["time_underwater"],
-        "num_trades":      int(pos.diff().abs().sum() / 2),
-        "win_rate":        win_rate,
-        "cost_bps":        cost_bps,
-        "strat_ret":       strat_ret,
-        "bh_ret":          bh_ret,
-        "equity":          m["equity"],
+        "mode":         mode,
+        "total_return": m["total_return"],
+        "cagr":         m["cagr"],
+        "sharpe":       m["sharpe"],
+        "max_dd":       m["max_dd"],
+        "num_trades":   int((pos.diff().abs().fillna(0).sum() + initial) / 2),
+        "win_rate":     win_rate,
+        "cost_bps":     cost_bps,
+        "strat_ret":    strat_ret,
+        "bh_ret":       bh_ret,
+        "equity":       m["equity"],
     }
 
 def direct_h5(model, X_latest_scaled: np.ndarray, current_close: float,

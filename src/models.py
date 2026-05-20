@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.metrics import mean_squared_error
 from sklearn.model_selection import ParameterGrid
 from scipy.stats import spearmanr
 
@@ -24,24 +24,11 @@ class AlwaysLong:
 
 
 def train_all_models(X_train, y_train) -> dict:
-    """Fit 4 models on the training set. Returns dict of {name: model}."""
-    naive_zero = NaiveZero().fit(X_train, y_train)
-    always_long = AlwaysLong().fit(X_train, y_train)
-    linreg = LinearRegression().fit(X_train, y_train)
-    rf = RandomForestRegressor(
-        n_estimators=300,
-        max_depth=5,
-        min_samples_leaf=10,
-        max_features="sqrt",
-        random_state=SEED,
-        n_jobs=-1,
-    ).fit(X_train, y_train)
-
+    """Fit the three non-RF baselines. RF is supplied by tune_random_forest."""
     return {
-        "NaiveZero": naive_zero,
-        "AlwaysLong": always_long,
-        "LinearRegression": linreg,
-        "RandomForest": rf,
+        "NaiveZero":        NaiveZero().fit(X_train, y_train),
+        "AlwaysLong":       AlwaysLong().fit(X_train, y_train),
+        "LinearRegression": LinearRegression().fit(X_train, y_train),
     }
 
 
@@ -54,8 +41,7 @@ def directional_accuracy(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 
 def information_coefficient(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[float, float, float]:
-    """Returns (IC, RankIC, t_stat). IC = Pearson corr; RankIC = Spearman corr.
-    t_stat = IC * sqrt(N-2) / sqrt(1-IC^2). |t| > 2 -> significant at p ~ 0.05."""
+    """Pearson IC, Spearman rank IC, and t-stat of IC. |t|>2 means p~0.05."""
     if np.std(y_pred) == 0:                  # flat predictor
         return float("nan"), float("nan"), float("nan")
     ic = float(np.corrcoef(y_pred, y_true)[0, 1])
@@ -66,17 +52,13 @@ def information_coefficient(y_true: np.ndarray, y_pred: np.ndarray) -> tuple[flo
 
 
 def evaluate(y_true, y_pred) -> dict:
-    """Return all 7 metrics. NaN means 'not applicable' (e.g. DirAcc on NaiveZero)."""
-    y_true_arr = y_true.values if hasattr(y_true, "values") else np.asarray(y_true)
-    ic,rank_ic, t_stat = information_coefficient(y_true_arr, y_pred)
+    """Return RMSE / DirAcc / IC. NaN where not applicable (e.g. DirAcc on NaiveZero)."""
+    y_arr = y_true.values if hasattr(y_true, "values") else np.asarray(y_true)
+    ic, _, _ = information_coefficient(y_arr, y_pred)
     return {
-        "RMSE": np.sqrt(mean_squared_error(y_true, y_pred)),
-        "MAE": mean_absolute_error(y_true, y_pred),
-        "R2": r2_score(y_true, y_pred),
-        "DirAcc": directional_accuracy(y_true_arr, y_pred),
-        "IC": ic,
-        "RankIC": rank_ic,
-        "IC_t": t_stat,
+        "RMSE":   float(np.sqrt(mean_squared_error(y_true, y_pred))),
+        "DirAcc": directional_accuracy(y_arr, y_pred),
+        "IC":     ic,
     }
 
 

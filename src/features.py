@@ -8,7 +8,7 @@ def add_technical(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     # lag returns - short-term momentum
-    for lag in [1, 2, 3, 5, 10]:
+    for lag in [1, 5, 10]:
         df["ret_lag" + str(lag)] = df["ret"].shift(lag)
 
     # rolling mean/std of return
@@ -16,12 +16,11 @@ def add_technical(df: pd.DataFrame) -> pd.DataFrame:
         df["ret_ma"  + str(window)] = df["ret"].rolling(window).mean()
         df["ret_std" + str(window)] = df["ret"].rolling(window).std()
 
-    # price MA ratio (windows 20, 50) normalized to be stationary
-    # NOTE: dropped windows 5, 10 (collinear with ret_ma5, ret_ma10)
+    # price/MA ratio - stationary version of price levels
     for window in [20, 50]:
         df["price_ma" + str(window) + "_ratio"] = df["Close"] / df["Close"].rolling(window).mean()
 
-    # microstructure (uses today's OHLC -> no lookahead vs future target)
+    # microstructure (no lookahead - uses today's OHLC)
     prev_close = df["Close"].shift(1)
     df["gap"]            = (df["Open"] - prev_close) / prev_close
     df["intraday_range"] = (df["High"] - df["Low"]) / df["Close"]
@@ -33,19 +32,19 @@ def add_technical(df: pd.DataFrame) -> pd.DataFrame:
     std_20 = df["Close"].rolling(20).std()
     df["bb_pos"] = (df["Close"] - ma_20) / (2 * std_20)
 
-    # RSI(14) — Wilder's original formula written out
+    # RSI(14)
     delta = df["Close"].diff()
     gain  = delta.clip(lower=0).rolling(14).mean()
     loss  = (-delta.clip(upper=0)).rolling(14).mean()
     rs    = gain / loss.replace(0, np.nan)
     df["rsi14"] = 100 - 100 / (1 + rs)
 
-    # MACD = EMA12 - EMA26, signal = EMA9 of MACD
+    # MACD
     ema_12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema_26 = df["Close"].ewm(span=26, adjust=False).mean()
-    df["macd"]        = ema_12 - ema_26
-    df["macd_signal"] = df["macd"].ewm(span=9, adjust=False).mean()
-    df["macd_hist"]   = df["macd"] - df["macd_signal"]
+    df["macd"] = ema_12 - ema_26
+    macd_signal = df["macd"].ewm(span=9, adjust=False).mean()
+    df["macd_hist"] = df["macd"] - macd_signal
 
     # log-volume z-score (20-day)
     df["vol_z20"] = (df["LogVolume"] - df["LogVolume"].rolling(20).mean()) \
@@ -53,9 +52,8 @@ def add_technical(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def add_macro(df: pd.DataFrame) -> pd.DataFrame:
-    """For each macro: lagged 1-day and 5-day log-returns + lag-1 level.
-    All series are .shift(1) before computing returns so today's macro close
-    (which can be released after the equity close) does not leak into features.
+    """1-day and 5-day log-returns + lag-1 level for each macro series.
+    Inputs are .shift(1) first so today's macro close (released after equity close) doesn't leak.
     """
     df = df.copy()
     for col in ["VIX", "SPX", "DXY", "TNX", "OIL", "GOLD"]:

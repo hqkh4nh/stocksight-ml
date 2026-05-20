@@ -47,9 +47,18 @@ def build_dataset(ticker: str, stocks: dict, macro: pd.DataFrame) -> pd.DataFram
     df = df.dropna()
     return df
 
+# raw / non-stationary columns we don't feed to the model
+RAW_DROP = [
+    "Open", "High", "Low", "Close", "Volume", "LogVolume", "Ticker",
+    "VIX", "SPX", "DXY", "TNX", "OIL", "GOLD",   # macro levels; we keep _ret1/_ret5 and _lag1
+    "ret",                                       # daily return helper; ret_lag1 covers it
+    "target",
+]
+
+
 def split_xy(df: pd.DataFrame):
-    """Separate features from target. Returns (X, y, feature_cols)."""
-    feature_cols = [c for c in df.columns if c not in ["target", "Ticker"]]
+    """Drop non-stationary columns and the target. Returns (X, y, feature_cols)."""
+    feature_cols = [c for c in df.columns if c not in RAW_DROP]
     X = df[feature_cols].copy()
     y = df["target"].copy()
     return X, y, feature_cols
