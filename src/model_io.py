@@ -1,4 +1,4 @@
-"""Save / load pre-trained per-ticker artifacts under <repo>/models/."""
+"""Save and load per-ticker RF artifacts under <repo>/models/."""
 import json
 from datetime import datetime
 from pathlib import Path
@@ -30,7 +30,7 @@ def _write_manifest(data: dict) -> None:
 
 def save_artifact(ticker: str, model, scaler, feature_cols, win_params,
                   horizon: int = 5, extra: dict | None = None) -> Path:
-    """Pickle the trained artifact and update _manifest.json."""
+    """Pickle the trained artifact and refresh _manifest.json."""
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "ticker": ticker,
@@ -58,7 +58,7 @@ def save_artifact(ticker: str, model, scaler, feature_cols, win_params,
 
 
 def load_artifact(ticker: str) -> dict:
-    """Load a previously saved artifact. Raises FileNotFoundError if missing."""
+    """Load a saved artifact. Raises FileNotFoundError if it does not exist."""
     path = _artifact_path(ticker)
     if not path.exists():
         raise FileNotFoundError(f"No saved model for {ticker} at {path}")
@@ -70,14 +70,14 @@ def has_artifact(ticker: str) -> bool:
 
 
 def list_trained() -> set[str]:
-    """Set of tickers with a .pkl on disk (manifest is treated as advisory)."""
+    """Tickers that have a .pkl file on disk."""
     if not MODELS_DIR.exists():
         return set()
     return {p.stem for p in MODELS_DIR.glob("*.pkl")}
 
 
 def manifest_status(tickers: list[str]) -> dict[str, str | None]:
-    """Map each ticker -> trained_at iso string, or None if no artifact exists."""
+    """For each ticker, return its trained_at timestamp or None if missing."""
     manifest = _read_manifest()
     trained = list_trained()
     out: dict[str, str | None] = {}
@@ -90,7 +90,7 @@ def manifest_status(tickers: list[str]) -> dict[str, str | None]:
 
 
 def delete_all() -> int:
-    """Remove every .pkl + the manifest. Returns count of pkls deleted."""
+    """Delete every .pkl and the manifest. Returns how many files were removed."""
     if not MODELS_DIR.exists():
         return 0
     n = 0

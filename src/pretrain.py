@@ -1,4 +1,4 @@
-"""Train + save RF artifacts for the curated TOP20 ticker list."""
+"""Train and save RF artifacts for the curated TOP20 ticker list."""
 from typing import Callable
 
 from sklearn.ensemble import RandomForestRegressor
@@ -12,7 +12,7 @@ SEED = 42
 HORIZON = 5
 START_DATE = "2015-01-01"
 
-# Fixed RF params (mirrors scripts/quick_eval.py and the existing RF_QUICK).
+# Fixed RF params (same as scripts/quick_eval.py and the old RF_QUICK in streamlit).
 RF_PARAMS = dict(
     n_estimators=300,
     max_depth=3,
@@ -22,7 +22,7 @@ RF_PARAMS = dict(
     n_jobs=-1,
 )
 
-# Top 20 S&P 500 by market cap (~early 2026). Single source of truth.
+# Top 20 S&P 500 by market cap (~early 2026).
 TOP20 = [
     "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN",
     "META", "TSLA", "BRK-B", "AVGO", "JPM",
@@ -33,7 +33,11 @@ TOP20 = [
 
 def train_one(ticker: str, start: str = START_DATE, horizon: int = HORIZON,
               macro=None) -> dict:
-    """Fetch + build features + split + scale + fit RF. Save and return artifact."""
+    """Fetch data, build features, fit the RF, save the artifact, return it.
+
+    Pass `macro` (a pre-fetched fetch_macro() result) to avoid refetching macros
+    when training many tickers in a row.
+    """
     stocks = {ticker: fetch_stock(ticker, start=start)}
     if macro is None:
         macro = fetch_macro(start=start)
@@ -71,17 +75,17 @@ def train_missing(
     force: bool = False,
     progress_callback: Callable[[int, int, str], None] | None = None,
 ) -> list[str]:
-    """Train every ticker that has no artifact (or all of them when force=True).
+    """Train every ticker that has no artifact yet (or all of them when force=True).
 
-    progress_callback(done_count, total, current_ticker) is invoked AFTER each
-    successful train so a Streamlit progress bar can update.
+    progress_callback(done_count, total, current_ticker) fires after each ticker
+    so a Streamlit progress bar can update.
     """
     tickers = list(tickers) if tickers is not None else TOP20
     targets = [t for t in tickers if force or not has_artifact(t)]
     if not targets:
         return []
 
-    # fetch macros once — same for every ticker
+    # fetch macros once and reuse for every ticker
     macro = fetch_macro(start=START_DATE)
 
     trained = []

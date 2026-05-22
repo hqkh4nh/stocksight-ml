@@ -1,12 +1,17 @@
-"""Streamlit demo for stocksight-rf.
+"""Streamlit demo. Two sidebar views: AAPL with backtest, and a TOP20 explorer.
 
-Pre-trains RF models for TOP20 tickers on first launch (cached to disk under
-./models/). Two vertical "tabs" in the sidebar:
-  * AAPL Demo      — Forecast + Performance + Backtest
-  * Stock Explorer — pick any of the TOP20 — Forecast + Performance
+Models are pre-trained on first launch and cached under ./models/.
 """
 import sys
+import warnings
 from pathlib import Path
+
+from scipy.stats import ConstantInputWarning
+
+# scipy/numpy noise from constant baselines and leading-NaN macro shifts
+warnings.filterwarnings("ignore", category=RuntimeWarning,
+                        message=r"invalid value encountered in log")
+warnings.filterwarnings("ignore", category=ConstantInputWarning)
 
 import altair as alt
 import numpy as np
@@ -31,22 +36,21 @@ SEED = 42
 st.set_page_config(page_title="StockSight RF", layout="wide")
 
 
-# ---------------- cached data layer ----------------
+# data
 
-@st.cache_data(ttl=86400, persist="disk", show_spinner=False)
+@st.cache_data(persist="disk", show_spinner=False)
 def _fetch_stock(ticker: str, start: str = START_DATE) -> pd.DataFrame:
     return fetch_stock(ticker, start=start)
 
 
-@st.cache_data(ttl=86400, persist="disk", show_spinner=False)
+@st.cache_data(persist="disk", show_spinner=False)
 def _fetch_macro(start: str = START_DATE) -> pd.DataFrame:
     return fetch_macro(start=start)
 
 
 @st.cache_resource(show_spinner=False)
 def _prep_eval_data(ticker: str) -> dict:
-    """Recompute splits + scaled arrays for a ticker. Loads the saved artifact
-    so the scaler/feature columns match training exactly."""
+    """Rebuild train/val/test splits using the saved scaler and column order."""
     art = load_artifact(ticker)
     feat_cols = art["feature_cols"]
     scaler = art["scaler"]
@@ -57,7 +61,7 @@ def _prep_eval_data(ticker: str) -> dict:
     feat_df = build_training_set(ticker, stocks, macro, horizon=HORIZON)
 
     X, y, _ = split_xy(feat_df)
-    X = X[feat_cols]                              # enforce saved column order
+    X = X[feat_cols]                              # same column order as training
     X_tr, y_tr, X_va, y_va, X_te, y_te = time_split(X, y, horizon=HORIZON)
     y_tr_c = y_tr.clip(lo, hi)
     y_va_c = y_va.clip(lo, hi)
@@ -79,7 +83,7 @@ def _prep_eval_data(ticker: str) -> dict:
 
 @st.cache_resource(show_spinner=False)
 def _forecast_payload(ticker: str) -> dict:
-    """Build the live forecast for a ticker using the saved model."""
+    """Direct T+5 + 5-anchor vintage forecast off the saved model."""
     d = _prep_eval_data(ticker)
     art = d["artifact"]
     rf = art["model"]
@@ -104,31 +108,60 @@ def _forecast_payload(ticker: str) -> dict:
     }
 
 
+def _eval_one(y_true, y_pred) -> dict:
+    """RMSE, MAE, R2, DirAcc, IC, plus a long-only Sharpe."""
+    y_arr = y_true.values if hasattr(y_true, "values") else np.asarray(y_true)
+    p_arr = np.asarray(y_pred)
+
+    base = evaluate(y_true, y_pred)                       # RMSE / DirAcc / IC
+    mae = float(np.mean(np.abs(y_arr - p_arr)))
+    ss_res = float(np.sum((y_arr - p_arr) ** 2))
+    ss_tot = float(np.sum((y_arr - y_arr.mean()) ** 2))
+    r2 = float(1.0 - ss_res / ss_tot) if ss_tot > 0 else float("nan")
+
+    # toy strategy: long whenever pred > 0
+    pos = (p_arr > 0).astype(float)
+    strat = pos * y_arr
+    ann = np.sqrt(252 / HORIZON)
+    sd = float(strat.std())
+    sharpe = float(strat.mean() / sd * ann) if sd > 0 else float("nan")
+
+    return {
+        "RMSE":   base["RMSE"],
+        "MAE":    mae,
+        "R2":     r2,
+        "DirAcc": base["DirAcc"],
+        "IC":     base["IC"],
+        "Sharpe": sharpe,
+    }
+
+
 @st.cache_resource(show_spinner=False)
 def _eval_payload(ticker: str) -> dict:
-    """Evaluate 4 models on val/test. Uses the saved RF (no re-tuning)."""
+    """Score baselines + saved RF on val and test."""
     d = _prep_eval_data(ticker)
     rf = d["artifact"]["model"]
 
     baselines = train_all_models(d["X_tr_s"], d["y_tr"])
     models = {**baselines, "RandomForest": rf}
 
-    rows = []
+    rows_val, rows_test = [], []
     for name, m in models.items():
-        v = evaluate(d["y_va"], m.predict(d["X_va_s"]))
-        t = evaluate(d["y_te"], m.predict(d["X_te_s"]))
-        rows.append({"model": name,
-                     "val_RMSE": v["RMSE"], "val_DirAcc": v["DirAcc"], "val_IC": v["IC"],
-                     "test_RMSE": t["RMSE"], "test_DirAcc": t["DirAcc"], "test_IC": t["IC"]})
-    eval_table = pd.DataFrame(rows).set_index("model")
+        v = _eval_one(d["y_va"], m.predict(d["X_va_s"]))
+        t = _eval_one(d["y_te"], m.predict(d["X_te_s"]))
+        rows_val.append({"model": name, **v})
+        rows_test.append({"model": name, **t})
+    val_table  = pd.DataFrame(rows_val).set_index("model")
+    test_table = pd.DataFrame(rows_test).set_index("model")
     fi = pd.Series(rf.feature_importances_, index=d["feat_cols"]) \
            .sort_values(ascending=False)
-    return {"eval_table": eval_table, "feat_importance": fi}
+    return {"val_table": val_table, "test_table": test_table,
+            "feat_importance": fi}
 
 
 @st.cache_data(show_spinner=False)
 def _backtest_payload(ticker: str) -> dict:
-    """Walk-forward RF + LR + SPY benchmark for one ticker."""
+    """Walk-forward RF vs LR vs SPY buy-and-hold."""
     d = _prep_eval_data(ticker)
     rf_kw = {
         "n_estimators":     d["artifact"]["model"].n_estimators,
@@ -152,18 +185,17 @@ def _backtest_payload(ticker: str) -> dict:
     return {"bt_rf": bt_rf, "bt_lr": bt_lr, "bt_spy": bt_spy}
 
 
-# ---------------- model bootstrap ----------------
+# bootstrap
 
 def _ensure_models_trained():
-    """Train any missing TOP20 artifacts on first run."""
     status = manifest_status(TOP20)
     missing = [t for t, ts in status.items() if ts is None]
     if not missing:
         return
 
     st.warning(
-        f"First-run setup: training {len(missing)} model(s) for the TOP20 list. "
-        f"This runs once and is cached to disk. Estimated 5-10 minutes."
+        f"First run: training {len(missing)} model(s). Takes about 5-10 minutes "
+        f"and is cached after."
     )
     progress = st.progress(0.0, text="Starting...")
     log = st.empty()
@@ -179,7 +211,7 @@ def _ensure_models_trained():
     st.rerun()
 
 
-# ---------------- render helpers ----------------
+# renderers
 
 def _render_forecast_section(ticker: str):
     fc = _forecast_payload(ticker)
@@ -196,7 +228,7 @@ def _render_forecast_section(ticker: str):
     c3.metric("90% band width", f"{band_pct:.2f}%",
               help=f"[{d['band_low_price']:.2f}, {d['band_high_price']:.2f}]")
 
-    # --- Altair chart: history (last 60d) + vintage line + T+5 star + band shade
+    # 60d history + vintage line + diamond at T+5 + 90% band
     hist = fc["dataset"]["Close"].tail(60).rename("close").to_frame()
     hist["date"] = hist.index
     hist["kind"] = "History"
@@ -235,21 +267,32 @@ def _render_forecast_section(ticker: str):
     chart = (hist_line + vint_line + band + star).properties(
         height=380, title=f"{ticker}: last 60 days + {HORIZON}-day forecast"
     )
-    st.altair_chart(chart, use_container_width=True)
+    st.altair_chart(chart, width="stretch")
     st.caption(
-        f"Anchor = {fc['current_date'].date()}, horizon = {HORIZON} business days, "
-        f"orange band = +/- 1.645 sigma over RF tree predictions (90%)."
+        f"Anchor {fc['current_date'].date()}, horizon {HORIZON} business days, "
+        f"orange band is +/- 1.645 sigma over RF tree predictions (90%)."
     )
 
 
 def _render_performance_section(ticker: str):
     payload = _eval_payload(ticker)
-    st.subheader(f"Model comparison — {ticker}")
-    st.dataframe(payload["eval_table"].round(4), use_container_width=True)
-    st.caption(
-        "NaiveZero / AlwaysLong / LinearRegression baselines vs the pre-trained "
-        "RandomForest. Test split is the most recent ~15% of history."
+
+    fmt = {"RMSE": "{:.4f}", "MAE": "{:.4f}", "R2": "{:+.4f}",
+           "DirAcc": "{:.4f}", "IC": "{:+.4f}", "Sharpe": "{:+.2f}"}
+
+    st.subheader(f"Model comparison: {ticker}")
+    st.markdown("**Test set (most recent ~15%).** Out-of-sample, what matters most.")
+    st.dataframe(
+        payload["test_table"].style.format(fmt).background_gradient(
+            subset=["IC", "Sharpe", "DirAcc"], cmap="RdYlGn", axis=0
+        ).background_gradient(
+            subset=["RMSE", "MAE"], cmap="RdYlGn_r", axis=0
+        ),
+        width="stretch",
     )
+    with st.expander("Validation set"):
+        st.dataframe(payload["val_table"].style.format(fmt), width="stretch")
+
     st.subheader("Top 15 features (RF importance)")
     top = payload["feat_importance"].head(15)
     st.bar_chart(top, horizontal=True, height=380)
@@ -257,16 +300,9 @@ def _render_performance_section(ticker: str):
 
 def _render_backtest_section(ticker: str):
     st.caption(
-        "Walk-forward backtest: expanding train window, refit every 21 days, "
-        f"non-overlapping {HORIZON}-day bets, long-only, 5 bps/leg cost. "
-        "Slow on the first call (~30s) then cached."
+        f"Walk-forward, expanding train, refit every 21 days. Non-overlapping "
+        f"{HORIZON}-day bets, long-only, 5 bps/leg cost. First load ~30s."
     )
-    if not st.session_state.get(f"bt_run_{ticker}"):
-        if st.button("Run walk-forward backtest", type="primary", key=f"bt_btn_{ticker}"):
-            st.session_state[f"bt_run_{ticker}"] = True
-            st.rerun()
-        return
-
     with st.spinner("Running walk-forward backtest..."):
         bt = _backtest_payload(ticker)
     rf, lr, spy = bt["bt_rf"], bt["bt_lr"], bt["bt_spy"]
@@ -283,13 +319,13 @@ def _render_backtest_section(ticker: str):
     st.line_chart(eq, height=380)
 
 
-# ---------------- sidebar ----------------
+# sidebar
 
 def _render_sidebar() -> str:
     st.sidebar.title("StockSight RF")
     st.sidebar.caption(
-        f"5-day forward log-return forecast via RandomForest on technical + "
-        f"macro features. Training data starts {START_DATE}."
+        f"5-day forward log-return forecast (Random Forest, technical + macro). "
+        f"Training data starts {START_DATE}."
     )
 
     tab = st.sidebar.radio(
@@ -315,13 +351,13 @@ def _render_sidebar() -> str:
     return tab
 
 
-# ---------------- main ----------------
+# main
 
 tab = _render_sidebar()
 _ensure_models_trained()
 
 if tab == "AAPL Demo":
-    st.title(f"AAPL — {HORIZON}-day forecast, performance & backtest")
+    st.title(f"AAPL: {HORIZON}-day forecast, performance, backtest")
     st.header("Forecast")
     _render_forecast_section("AAPL")
     st.markdown("---")
@@ -331,13 +367,13 @@ if tab == "AAPL Demo":
     st.header("Backtest")
     _render_backtest_section("AAPL")
 
-else:  # Stock Explorer
+else:
     st.title("Stock Explorer")
     col1, _ = st.columns([1, 3])
     ticker = col1.selectbox("Pick a ticker", TOP20, index=0, key="explorer_ticker")
 
-    st.header(f"Forecast — {ticker}")
+    st.header(f"Forecast: {ticker}")
     _render_forecast_section(ticker)
     st.markdown("---")
-    st.header(f"Performance — {ticker}")
+    st.header(f"Performance: {ticker}")
     _render_performance_section(ticker)
