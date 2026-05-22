@@ -1,4 +1,4 @@
-# stocksight-rf
+# stocksight-ml
 
 A Random Forest model that forecasts the 5-day forward log-return of US
 equities from technical indicators and macro features, with a Streamlit
