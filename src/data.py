@@ -53,17 +53,6 @@ RAW_DROP = [
     "VIX", "SPX", "DXY", "TNX", "OIL", "GOLD",   # macro levels; we keep _ret5 and _lag1
     "ret",                                       # daily return helper; ret_lag5 covers momentum
     "target",
-    # --- pruned (importance < 0.5% or |corr| > 0.9 with a stronger feature) ---
-    "dow", "is_month_end", "month",              # calendar group: ~1% total importance
-    "GOLD_ret1", "OIL_ret1", "VIX_ret1",         # macro 1-day returns: all < 0.5%
-    "DXY_ret1", "SPX_ret1", "TNX_ret1",
-    "ret_lag1", "ret_lag10",                     # keep ret_lag5 as momentum representative
-    "gap",                                       # microstructure noise
-    "VIX_lag1",                                  # corr 0.95 with VIX_log_lag1
-    "ret_ma10",                                  # corr 0.92 with price_ma20_ratio
-    "bb_pos",                                    # rsi14 covers mean-reversion
-    "ret_ma5",                                   # ret_ma20 is the stronger rolling mean
-    "VIX_ret5",                                  # vix_z + VIX_log_lag1 cover VIX info
 ]
 
 

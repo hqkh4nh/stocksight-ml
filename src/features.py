@@ -4,87 +4,70 @@ import pandas as pd
 from src.data import build_dataset
 
 def add_technical(df: pd.DataFrame) -> pd.DataFrame:
-    """Lag returns, rolling stats, price ratios, RSI, MACD, Bollinger, microstructure."""
+    """Momentum, volatility, trend, RSI, MACD, microstructure, volume."""
     df = df.copy()
 
-    # lag returns - capture short-term momentum / mean-reversion signals
-    for lag in [1, 5, 10]:
-        df["ret_lag" + str(lag)] = df["ret"].shift(lag)
+    # 5-day lag return - main momentum signal
+    df["ret_lag5"] = df["ret"].shift(5)
 
-    # rolling mean of return = momentum strength; rolling std = realized volatility
-    for window in [5, 10, 20]:
-        df["ret_ma"  + str(window)] = df["ret"].rolling(window).mean()
-        df["ret_std" + str(window)] = df["ret"].rolling(window).std()
+    # realized volatility at 3 horizons + 20-day return mean (medium-term momentum)
+    df["ret_std5"]  = df["ret"].rolling(5).std()
+    df["ret_std10"] = df["ret"].rolling(10).std()
+    df["ret_ma20"]  = df["ret"].rolling(20).mean()
+    df["ret_std20"] = df["ret"].rolling(20).std()
 
-    # price/MA ratio - "how stretched is price vs its N-day average" (stationary trend strength)
-    for window in [20, 50]:
-        df["price_ma" + str(window) + "_ratio"] = df["Close"] / df["Close"].rolling(window).mean()
+    # price stretch vs N-day MA - trend strength (price_ma20_ratio is a top-6 feature)
+    for w in [20, 50]:
+        df["price_ma" + str(w) + "_ratio"] = df["Close"] / df["Close"].rolling(w).mean()
 
-    # microstructure (no lookahead - uses today's OHLC)
-    prev_close = df["Close"].shift(1)
-    df["gap"]            = (df["Open"] - prev_close) / prev_close   # overnight jump: news / earnings reaction
-    df["intraday_range"] = (df["High"] - df["Low"]) / df["Close"]   # intraday volatility proxy
+    # microstructure: intraday range (vol proxy) + close location in day's range
+    df["intraday_range"] = (df["High"] - df["Low"]) / df["Close"]
     range_hl             = (df["High"] - df["Low"]).replace(0, np.nan)
-    df["close_loc"]      = (df["Close"] - df["Low"]) / range_hl     # close position in day's range: 1=strong close, 0=weak close
+    df["close_loc"]      = (df["Close"] - df["Low"]) / range_hl
 
-    # Bollinger band position (20-day z-score) - mean-reversion / breakout signal
-    ma_20  = df["Close"].rolling(20).mean()
-    std_20 = df["Close"].rolling(20).std()
-    df["bb_pos"] = (df["Close"] - ma_20) / (2 * std_20)
-
-    # RSI(14) - overbought (>70) / oversold (<30) momentum oscillator
+    # RSI(14) - overbought (>70) / oversold (<30) oscillator
     delta = df["Close"].diff()
     gain  = delta.clip(lower=0).rolling(14).mean()
     loss  = (-delta.clip(upper=0)).rolling(14).mean()
     rs    = gain / loss.replace(0, np.nan)
     df["rsi14"] = 100 - 100 / (1 + rs)
 
-    # MACD - trend-following: difference of two EMAs (fast vs slow)
+    # MACD - trend-following (EMA12 - EMA26) + its acceleration histogram
     ema_12 = df["Close"].ewm(span=12, adjust=False).mean()
     ema_26 = df["Close"].ewm(span=26, adjust=False).mean()
-    df["macd"] = ema_12 - ema_26                                    # raw trend signal
-    macd_signal = df["macd"].ewm(span=9, adjust=False).mean()
-    df["macd_hist"] = df["macd"] - macd_signal                      # momentum acceleration (trend speeding up / slowing down)
+    df["macd"]      = ema_12 - ema_26
+    df["macd_hist"] = df["macd"] - df["macd"].ewm(span=9, adjust=False).mean()
 
-    # log-volume z-score (20-day) - flags abnormal trading activity vs recent norm
+    # abnormal volume (20-day z-score of log-volume)
     df["vol_z20"] = (df["LogVolume"] - df["LogVolume"].rolling(20).mean()) \
                     / df["LogVolume"].rolling(20).std()
     return df
 
 def add_macro(df: pd.DataFrame) -> pd.DataFrame:
-    """1-day and 5-day log-returns + lag-1 level for each macro series.
-    Inputs are .shift(1) first so today's macro close (released after equity close) doesn't leak.
+    """5-day log-return + lag-1 level for each macro series.
+
+    .shift(1) first so today's macro close (released after equity close) doesn't leak.
+    Macro levels (lag1) dominate feature importance — GOLD_lag1, TNX_lag1, SPX_lag1,
+    DXY_lag1 occupy the top-5 alongside GOLD_ret5.
     """
     df = df.copy()
-    for col in ["VIX", "SPX", "DXY", "TNX", "OIL", "GOLD"]:
-        df[col + "_ret1"] = np.log(df[col].shift(1) / df[col].shift(2))
+    for col in ["SPX", "DXY", "TNX", "OIL", "GOLD"]:
         df[col + "_ret5"] = np.log(df[col].shift(1) / df[col].shift(6))
         df[col + "_lag1"] = df[col].shift(1)
 
-    # VIX is right-skewed -> log-transform stabilises the distribution
+    # VIX gets a dedicated treatment: log-level (right-skew fix) + 60-day z-score
     df["VIX_log_lag1"] = np.log(df["VIX"].shift(1))
-
-    # VIX z-score on 60-day window: flags risk-on / risk-off regime change
     vix_lag = df["VIX"].shift(1)
     df["vix_z"] = (vix_lag - vix_lag.rolling(60).mean()) / vix_lag.rolling(60).std()
     return df
 
-def add_calendar(df: pd.DataFrame) -> pd.DataFrame:
-    """Day-of-week, month, month-end flag."""
-    df = df.copy()
-    df["dow"]          = df.index.dayofweek          # weekday effect (e.g. Monday vs Friday returns)
-    df["month"]        = df.index.month               # seasonality (Jan effect, summer lull, etc.)
-    df["is_month_end"] = df.index.is_month_end.astype(int)  # month-end rebalancing flows
-    return df
-
 def build_features_only(raw_df: pd.DataFrame) -> pd.DataFrame:
-    """Build all features but do noy add target."""
+    """Build all features but do not add target."""
     df = raw_df.copy()
-    df["LogVolume"] = np.log1p(df["Volume"])  # compress skewed volume to log scale
-    df["ret"] = np.log(df["Close"] / df["Close"].shift(1))  # 1-day log-return, stationary
+    df["LogVolume"] = np.log1p(df["Volume"])               # compress skewed volume to log scale
+    df["ret"] = np.log(df["Close"] / df["Close"].shift(1)) # 1-day log-return, stationary
     df = add_technical(df)
     df = add_macro(df)
-    df = add_calendar(df)
     return df
 
 
