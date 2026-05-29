@@ -10,11 +10,12 @@ from src.model_io import has_artifact, save_artifact
 
 SEED = 42
 HORIZON = 5
-START_DATE = "2015-01-01"
+START_DATE = "2012-01-01"
 
-# Fixed RF params (same as scripts/quick_eval.py and the old RF_QUICK in streamlit).
+# Mirrors best_params from notebook cell 38 tune_random_forest grid search,
+# so streamlit's pretrained models reproduce the notebook's walk-forward results.
 RF_PARAMS = dict(
-    n_estimators=300,
+    n_estimators=500,
     max_depth=3,
     min_samples_leaf=50,
     max_features="sqrt",

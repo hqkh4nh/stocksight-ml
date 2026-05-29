@@ -229,7 +229,14 @@ def _render_forecast_section(ticker: str):
               help=f"[{d['band_low_price']:.2f}, {d['band_high_price']:.2f}]")
 
     # 60d history + vintage line + diamond at T+5 + 90% band
-    hist = fc["dataset"]["Close"].tail(60).rename("close").to_frame()
+    # Truncate hist at cur_date so its endpoint coincides with vint's first
+    # point — otherwise a 1-bar gap appears whenever dropna(feat_cols) drops
+    # the latest dataset row (e.g. stale yfinance macros).
+    hist = (fc["dataset"]["Close"]
+            .loc[:fc["current_date"]]
+            .tail(60)
+            .rename("close")
+            .to_frame())
     hist["date"] = hist.index
     hist["kind"] = "History"
 
