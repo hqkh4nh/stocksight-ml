@@ -4,12 +4,12 @@ import yfinance as yf
 TICKER_DEFAULT = "AAPL"
 START_DATE = "2012-01-01"
 MACRO_TICKERS = {
-    "VIX":  "^VIX",
-    "SPX":  "^GSPC",
-    "DXY":  "DX-Y.NYB",
-    "TNX":  "^TNX",
-    "OIL":  "CL=F",
-    "GOLD": "GC=F",
+    "VIX":  "^VIX",      # implied vol of S&P500 (fear gauge)
+    "SPX":  "^GSPC",     # S&P500 index (broad market)
+    "DXY":  "DX-Y.NYB",  # US dollar index vs basket
+    "TNX":  "^TNX",      # 10y treasury yield
+    "OIL":  "CL=F",      # WTI crude oil futures
+    "GOLD": "GC=F",      # gold futures (safe haven)
 }
 
 def fetch_stock(ticker: str, start: str = START_DATE) -> pd.DataFrame:
