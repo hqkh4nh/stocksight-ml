@@ -6,32 +6,25 @@ from pathlib import Path
 import joblib
 
 ROOT = Path(__file__).resolve().parents[1]
-# Toàn bộ model lưu trong thư mục <repo>/models
 MODELS_DIR = ROOT / "models"
-# Manifest là file JSON tóm tắt tình trạng artifact.
 MANIFEST_PATH = MODELS_DIR / "_manifest.json"
 
-# File này quản lý phần lưu/truy xuất mô hình trên đĩa.
-# Có thể xem đây là "tầng persistence" của project.
-#
-# Tại sao phải lưu artifact?
-# - App Streamlit không nên train lại mỗi lần chạy
-# - Dự đoán phải dùng đúng scaler và đúng thứ tự cột đã train
-# - Cần metadata để biết ticker nào đã sẵn sàng
+# File này quản lý phần persistence:
+# - lưu artifact của từng ticker ra đĩa
+# - load lại artifact cho app
+# - theo dõi tình trạng train qua manifest
 
 
 def _artifact_path(ticker: str) -> Path:
-    # Mỗi ticker tương ứng một file artifact để app load đơn giản hơn.
+    # Mỗi ticker tương ứng một file .pkl riêng.
     return MODELS_DIR / f"{ticker}.pkl"
 
 
 def _read_manifest() -> dict:
     if not MANIFEST_PATH.exists():
-        # Chưa có manifest nghĩa là chưa pretrain gì cả hoặc vừa xóa model.
         return {}
     try:
-        # Manifest chỉ là metadata phụ trợ; nếu file này hỏng thì trả về dict rỗng
-        # để app vẫn chạy thay vì lỗi toàn bộ.
+        # Nếu manifest hỏng JSON thì fallback về dict rỗng để app không chết hẳn.
         return json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         return {}
@@ -39,16 +32,28 @@ def _read_manifest() -> dict:
 
 def _write_manifest(data: dict) -> None:
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    # indent=2 và sort_keys=True giúp file manifest dễ đọc khi mở bằng tay.
+    # indent=2 và sort_keys=True để file dễ đọc nếu mở bằng tay.
     MANIFEST_PATH.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def save_artifact(ticker: str, model, scaler, feature_cols, win_params,
-                  horizon: int = 5, extra: dict | None = None) -> Path:
+def save_artifact(
+    ticker: str,
+    model,
+    scaler,
+    feature_cols,
+    win_params,
+    horizon: int = 5,
+    extra: dict | None = None,
+) -> Path:
     """Pickle the trained artifact and refresh _manifest.json."""
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    # Lưu toàn bộ thông tin cần thiết để tái tạo đúng quy trình inference:
-    # model, scaler, thứ tự feature, ngưỡng clipping và horizon.
+
+    # payload lưu:
+    # - model
+    # - scaler
+    # - đúng thứ tự feature
+    # - ngưỡng winsorize
+    # - horizon
     payload = {
         "ticker": ticker,
         "model": model,
@@ -59,20 +64,18 @@ def save_artifact(ticker: str, model, scaler, feature_cols, win_params,
         "trained_at": datetime.now().isoformat(timespec="seconds"),
     }
     if extra:
-        # extra cho phép mở rộng payload trong tương lai mà không sửa cấu trúc cơ bản.
         payload.update(extra)
 
     path = _artifact_path(ticker)
     # joblib phù hợp để lưu object sklearn như model/scaler.
     joblib.dump(payload, path)
 
-    # Manifest là bảng chỉ mục nhẹ để UI biết model nào đã tồn tại và train lúc nào
-    # mà không cần mở từng file pickle.
+    # manifest là bảng chỉ mục nhẹ để UI biết ticker nào đã train lúc nào.
     manifest = _read_manifest()
     manifest[ticker] = {
         "trained_at": payload["trained_at"],
-        "horizon":    payload["horizon"],
-        "file":       path.name,
+        "horizon": payload["horizon"],
+        "file": path.name,
     }
     _write_manifest(manifest)
     return path
@@ -83,12 +86,11 @@ def load_artifact(ticker: str) -> dict:
     path = _artifact_path(ticker)
     if not path.exists():
         raise FileNotFoundError(f"No saved model for {ticker} at {path}")
-    # joblib.load trả lại đúng dict đã được lưu ở save_artifact().
     return joblib.load(path)
 
 
 def has_artifact(ticker: str) -> bool:
-    # Kiểm tra nhanh xem ticker đã được pretrain hay chưa.
+    # Kiểm tra nhanh xem ticker này đã có file model trên đĩa chưa.
     return _artifact_path(ticker).exists()
 
 
@@ -96,7 +98,6 @@ def list_trained() -> set[str]:
     """Tickers that have a .pkl file on disk."""
     if not MODELS_DIR.exists():
         return set()
-    # p.stem lấy tên file không kèm đuôi .pkl -> chính là ticker.
     return {p.stem for p in MODELS_DIR.glob("*.pkl")}
 
 
@@ -106,11 +107,10 @@ def manifest_status(tickers: list[str]) -> dict[str, str | None]:
     trained = list_trained()
     out: dict[str, str | None] = {}
     for t in tickers:
-        # Nếu file model có tồn tại thì lấy thêm thời điểm train từ manifest.
         if t in trained:
             out[t] = manifest.get(t, {}).get("trained_at")
         else:
-            # None nghĩa là ticker này chưa có artifact sẵn sàng.
+            # None nghĩa là ticker này chưa có artifact khả dụng.
             out[t] = None
     return out
 
@@ -121,7 +121,7 @@ def delete_all() -> int:
         return 0
     n = 0
     for p in MODELS_DIR.glob("*.pkl"):
-        # Xóa từng file artifact của ticker.
+        # Xóa từng artifact ticker.
         p.unlink()
         n += 1
     if MANIFEST_PATH.exists():
